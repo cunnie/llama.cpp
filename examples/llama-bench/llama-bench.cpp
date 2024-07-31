@@ -1293,16 +1293,28 @@ static void test_prompt(llama_context * ctx, int n_prompt, int n_past, int n_bat
 }
 
 static void test_gen(llama_context * ctx, int n_gen, int n_past, int n_threads) {
+    fprintf(stdout, "\n----> n_gen: %d", n_gen);  // 1 first two, 1024 after
+    fprintf(stdout, "\n----> n_past: %d", n_past); // 0
+    fprintf(stdout, "\n----> n_threads: %d", n_threads); // 16
     llama_set_n_threads(ctx, n_threads, n_threads);
 
     const llama_model * model = llama_get_model(ctx);
     const int32_t n_vocab = llama_n_vocab(model);
 
+    fprintf(stdout, "\n----> n_vocab: %d", n_vocab); // 128256, Meta-Llama-3-8B
+
     llama_token token = llama_add_bos_token(model) ? llama_token_bos(model) : std::rand() % n_vocab;
+    fprintf(stdout, "\n----> token: %s(%d)", llama_token_get_text(model, token), token);
+    llama_token old_token = token;
 
     for (int i = 0; i < n_gen; i++) {
-        llama_decode(ctx, llama_batch_get_one(&token, 1, n_past + i, 0));
+        int32_t kv_status = llama_decode(ctx, llama_batch_get_one(&token, 1, n_past + i, 0));
+        fprintf(stdout, " %s→%s(%d) ", llama_token_get_text(model, old_token), llama_token_get_text(model, token), token);
+        if (kv_status == 1) {
+            fprintf(stdout, "\n----> could not find a KV slot for the batch (try reducing the size of the batch or increase the context)");
+        }
         llama_synchronize(ctx);
+        old_token = token;
         token = std::rand() % n_vocab;
     }
 }
