@@ -967,23 +967,28 @@ static bool alloc_tensor_range(struct ggml_context * ctx,
 }
 
 ggml_backend_buffer_t ggml_backend_alloc_ctx_tensors_from_buft(struct ggml_context * ctx, ggml_backend_buffer_type_t buft) {
-    GGML_ASSERT(ggml_get_no_alloc(ctx) == true);
+    GGML_ASSERT(ggml_get_no_alloc(ctx) == true); // true
 
-    size_t alignment = ggml_backend_buft_get_alignment(buft);
-    size_t max_size = ggml_backend_buft_get_max_size(buft);
+    size_t alignment = ggml_backend_buft_get_alignment(buft); // MB Air: 32
+    size_t max_size = ggml_backend_buft_get_max_size(buft); // MB Air: 12 GiB, 12884901888, 12 * 2^30
 
     ggml_backend_buffer_t * buffers = NULL;
     size_t n_buffers = 0;
 
     size_t cur_buf_size = 0;
     struct ggml_tensor * first = ggml_get_first_tensor(ctx);
+    fprintf(stderr, "----> %s: tensor name: %s\n", __func__, first->name); // "cache_k_l0"
+    int j = 0;
     for (struct ggml_tensor * t = first; t != NULL; t = ggml_get_next_tensor(ctx, t)) {
+        j++;
+        fprintf(stderr, "----> %s: %d tensor name: %s, size %zu", __func__, j, t->name, ggml_nbytes(t)); // "cache_{k,v}_l{0..131}", 262144 bytes (2^18)
         size_t this_size = 0;
-        if (t->data == NULL && t->view_src == NULL) {
-            this_size = GGML_PAD(ggml_backend_buft_get_alloc_size(buft, t), alignment);
+        if (t->data == NULL && t->view_src == NULL) { // 0x0, NULL
+            this_size = GGML_PAD(ggml_backend_buft_get_alloc_size(buft, t), alignment); // this_size = ggml_backend_buft_get_alloc_size(buft, t) = 268435456 (2^28)
         }
+        fprintf(stderr, "  ----> This size: %zu\n", this_size);
 
-        if (this_size > max_size) {
+        if (this_size > max_size) { // skip
             fprintf(stderr, "%s: tensor %s is too large to fit in a %s buffer (tensor size: %zu, max buffer size: %zu)\n",
                     __func__, t->name,
                     ggml_backend_buft_name(buft),
@@ -995,17 +1000,18 @@ ggml_backend_buffer_t ggml_backend_alloc_ctx_tensors_from_buft(struct ggml_conte
             return NULL;
         }
 
-        if ((cur_buf_size + this_size) > max_size) {
+        if ((cur_buf_size + this_size) > max_size) { // skip
             // allocate tensors in the current buffer
             if (!alloc_tensor_range(ctx, first, t, buft, cur_buf_size, &buffers, &n_buffers)) {
                 return NULL;
             }
             first = t;
             cur_buf_size = this_size;
-        } else {
-            cur_buf_size += this_size;
+        } else { // YES!
+            cur_buf_size += this_size; // += 268435456 (2^28)
         }
     }
+    fprintf(stderr, "----> %s: first tensor name: %s\n", __func__, first->name);
 
     // allocate remaining tensors
     if (cur_buf_size > 0) {

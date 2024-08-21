@@ -36,12 +36,12 @@ size_t ggml_backend_buft_get_max_size(ggml_backend_buffer_type_t buft) {
 
 GGML_CALL size_t ggml_backend_buft_get_alloc_size(ggml_backend_buffer_type_t buft, struct ggml_tensor * tensor) {
     // get_alloc_size is optional, defaults to ggml_nbytes
-    if (buft->iface.get_alloc_size) {
+    if (buft->iface.get_alloc_size) { // buft->iface.get_alloc_size == 0
         size_t size = buft->iface.get_alloc_size(buft, tensor);
         assert(size >= ggml_nbytes(tensor));
         return size;
     }
-    return ggml_nbytes(tensor);
+    return ggml_nbytes(tensor); // 268435456 (2^28)
 }
 
 bool ggml_backend_buft_is_host(ggml_backend_buffer_type_t buft) {

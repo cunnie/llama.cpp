@@ -3446,39 +3446,58 @@ static size_t llama_get_device_memory(const llama_model & model, int device) {
 //
 
 static bool llama_kv_cache_init(
-             struct llama_kv_cache & cache,
+             struct llama_kv_cache & cache, // a.k.a. ctx->kv_self
                const llama_context * ctx,
-                         ggml_type   type_k,
-                         ggml_type   type_v,
-                          uint32_t   kv_size,
-                              bool   offload) {
+                         ggml_type   type_k, // GGML_TYPE_F16
+                         ggml_type   type_v, // GGML_TYPE_F16
+                          uint32_t   kv_size, // 131072, i.e. 128kB
+                              bool   offload) { // true
     const llama_model & model = ctx->model;
-    const llama_cparams & cparams = ctx->cparams;
+    const llama_cparams & cparams = ctx->cparams; // "cmd_params"
+        // cparams.n_ctx = 14910496 // context size during inference
+        // cparams.n_batch = 24576
+        // cparams.n_ubatch = 60775120
+        // cparams.n_threads = 60775296
+        // cparams.n_threads_batch = 24576
+        // cparams.flash_attn = nil (false)
 
     const struct llama_hparams & hparams = model.hparams;
+        // hparams.n_vocab = 128256
+        // hparams.n_ctx_train = 131072
+        // hparams.n_embd = 4096
+        // hparams.n_layer = 32
 
-    const int64_t  n_layer = hparams.n_layer;
+    const int64_t  n_layer = hparams.n_layer; // 32
 
     cache.has_shift = false;
 
-    cache.recurrent = llama_model_is_recurrent(&model);
-    cache.v_trans   = !cache.recurrent && !cparams.flash_attn;
+    cache.recurrent = llama_model_is_recurrent(&model); // i.e. false
+    cache.v_trans   = !cache.recurrent && !cparams.flash_attn; // i.e. true
 
     cache.head = 0;
-    cache.size = kv_size;
+    cache.size = kv_size; // 131072
     cache.used = 0;
 
     cache.type_k = type_k;
     cache.type_v = type_v;
 
     cache.cells.clear();
-    cache.cells.resize(kv_size);
+    cache.cells.resize(kv_size); // 131072
+
+    LLAMA_LOG_INFO("----> %s: kv_size = %d\n", __func__, kv_size);
+
+    if (cache.recurrent) { // skip, i.e. cache.recurrent == nil
+        // init state copy sources
+        for (uint32_t i = 0; i < cache.size; ++i) { // cache.size == 131072
+            cache.cells[i].src = i;
+        }
+    }
 
     // count used buffer types
     std::map<ggml_backend_buffer_type_t, int> buft_layer_count;
-    if (offload) {
+    if (offload) {  // true
         for (int64_t i = 0; i < n_layer; ++i) {
-            buft_layer_count[model.buft_layer[i].buft]++;
+            buft_layer_count[model.buft_layer[i].buft]++; // size 1, {layers' buft, 32}
         }
     } else {
         buft_layer_count[llama_default_buffer_type_cpu(true)] = n_layer;
@@ -3487,9 +3506,11 @@ static bool llama_kv_cache_init(
     // create a context for each buffer type
     std::map<ggml_backend_buffer_type_t, ggml_context *> ctx_map;
     for (auto & it : buft_layer_count) {
-        int n_layers = it.second;
+        int n_layers = it.second; // it.first = layers' buft, it.second = 32
         struct ggml_init_params params = {
-            /*.mem_size   =*/ 2u*n_layers*ggml_tensor_overhead(),
+            /*.mem_size   =*/ 2u*n_layers*ggml_tensor_overhead(),  // 23552
+              // ggml_tensor_overhead() = 368
+              // n_layers = 32
             /*.mem_buffer =*/ NULL,
             /*.no_alloc   =*/ true,
         };
@@ -3498,31 +3519,31 @@ static bool llama_kv_cache_init(
             LLAMA_LOG_ERROR("%s: failed to allocate context for kv cache\n", __func__);
             return false;
         }
-        ctx_map[it.first] = ctx;
+        ctx_map[it.first] = ctx; // size=1, {layers' buft, ctx}
         cache.ctxs.push_back(ctx);
     }
 
-    cache.k_l.reserve(n_layer);
-    cache.v_l.reserve(n_layer);
+    cache.k_l.reserve(n_layer); // cache.k_l 0-length vector
+    cache.v_l.reserve(n_layer); // cache.v_l 0-length vector
 
     for (int i = 0; i < (int) n_layer; i++) {
-        const uint32_t n_embd_k_gqa = hparams.n_embd_k_gqa(i) + hparams.n_embd_k_s();
-        const uint32_t n_embd_v_gqa = hparams.n_embd_v_gqa(i) + hparams.n_embd_v_s();
+        const uint32_t n_embd_k_gqa = hparams.n_embd_k_gqa(i) + hparams.n_embd_k_s(); // 1024 + 0
+        const uint32_t n_embd_v_gqa = hparams.n_embd_v_gqa(i) + hparams.n_embd_v_s(); // 1024 + 0
 
-        struct ggml_context * ctx = offload ? ctx_map.at(model.buft_layer[i].buft) : cache.ctxs.front();
-        ggml_tensor * k = ggml_new_tensor_1d(ctx, type_k, n_embd_k_gqa*kv_size);
-        ggml_tensor * v = ggml_new_tensor_1d(ctx, type_v, n_embd_v_gqa*kv_size);
-        ggml_format_name(k, "cache_k_l%d", i);
-        ggml_format_name(v, "cache_v_l%d", i);
+        struct ggml_context * ctx = offload ? ctx_map.at(model.buft_layer[i].buft) : cache.ctxs.front(); // layers' buft
+        ggml_tensor * k = ggml_new_tensor_1d(ctx, type_k, n_embd_k_gqa*kv_size); // k.ne = ([0] = 134217728, [1] = 1, [2] = 1, [3] = 1)
+        ggml_tensor * v = ggml_new_tensor_1d(ctx, type_v, n_embd_v_gqa*kv_size); // v.ne = ([0] = 134217728, [1] = 1, [2] = 1, [3] = 1)
+        ggml_format_name(k, "cache_k_l%d", i); // k.name "cache_k_l0"
+        ggml_format_name(v, "cache_v_l%d", i); // v.name "cache_v_l0"
         cache.k_l.push_back(k);
         cache.v_l.push_back(v);
     }
 
     // allocate tensors and initialize the buffers to avoid NaNs in the padding
-    for (auto it : ctx_map) {
-        ggml_backend_buffer_type_t buft = it.first;
+    for (auto it : ctx_map) {  // ctx_map is size of one { layers' buft, context }
+        ggml_backend_buffer_type_t buft = it.first; //
         ggml_context * ctx = it.second;
-        ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
+        ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft); // <-- this is where the KV size is allocated
         if (!buf) {
             LLAMA_LOG_ERROR("%s: failed to allocate buffer for kv cache\n", __func__);
             return false;

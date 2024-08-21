@@ -3318,7 +3318,7 @@ GGML_CALL int64_t ggml_nrows(const struct ggml_tensor * tensor) {
 
 GGML_CALL size_t ggml_nbytes(const struct ggml_tensor * tensor) {
     size_t nbytes;
-    size_t blck_size = ggml_blck_size(tensor->type);
+    size_t blck_size = ggml_blck_size(tensor->type); // blck_size = 1 ; tensor->type == GGML_TYPE_F16
     if (blck_size == 1) {
         nbytes = ggml_type_size(tensor->type);
         for (int i = 0; i < GGML_MAX_DIMS; ++i) {
@@ -4540,7 +4540,7 @@ struct ggml_tensor * ggml_get_first_tensor(const struct ggml_context * ctx) {
 }
 
 struct ggml_tensor * ggml_get_next_tensor(const struct ggml_context * ctx, struct ggml_tensor * tensor) {
-    struct ggml_object * obj = (struct ggml_object *) ((char *)tensor - GGML_OBJECT_SIZE);
+    struct ggml_object * obj = (struct ggml_object *) ((char *)tensor - GGML_OBJECT_SIZE); // GGML_OBJECT_SIZE = 32
     obj = obj->next;
 
     char * const mem_buffer = ctx->mem_buffer;
